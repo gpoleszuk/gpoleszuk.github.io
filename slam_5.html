@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>v5 :: Parallax Depth Estimation Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+        #videoContainer {
+            position: relative;
+            width: 80%;
+            margin: auto;
+        }
+        video {
+            width: 100%;
+        }
+        #frameContainer {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+            position: relative;
+        }
+        .frame {
+            border: 2px solid #ccc;
+            margin: 10px;
+            position: relative;
+        }
+        .coordinates {
+            position: absolute;
+            color: red;
+            font-weight: bold;
+        }
+        .mouse-coords {
+            margin-top: 5px;
+            font-weight: bold;
+            color: blue;
+        }
+        .distance {
+            background-color: palegreen;
+            color: black;
+            padding: 5px;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+        }
+        #calibration, #fontOptions {
+            margin-top: 20px;
+        }
+        textarea {
+            width: 100%;
+            max-width: 800px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Parallax Depth Estimation Tool</h1>
+<div id="videoContainer">
+    <video id="video" onloadstart="this.playbackRate = 0.25;" controls>
+        <source src="WhatsApp Video 2025-04-14 at 13.31.59.mp4#t=722.6667,727.50" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+</div>
+
+<select id="canvasSelector">
+    <option value="frame1">Update Left Canvas</option>
+    <option value="frame2">Update Right Canvas</option>
+</select>
+<button id="captureFrame">Capture Frame</button>
+<button id="clearAllPoints">Clear All Points</button>
+<button id="removeLastPoint">Remove Last Point</button>
+<button id="saveCoordinates">Save Coordinates to File</button>
+<button id="clearLeftCanvas">Clear Left Canvas</button>
+<button id="clearRightCanvas">Clear Right Canvas</button>
+
+<div id="frameContainer">
+    <div class="frame" id="frame1" onclick="captureCoordinates(event, 'frame1')">
+        <img id="img1" src="" alt="Frame 1" />
+        <div class="mouse-coords" id="coords1">Mouse Coords: (0.000, 0.000)</div>
+    </div>
+    <div class="frame" id="frame2" onclick="captureCoordinates(event, 'frame2')">
+        <img id="img2" src="" alt="Frame 2" />
+        <div class="mouse-coords" id="coords2">Mouse Coords: (0.000, 0.000)</div>
+    </div>
+    <div class="distance" id="distanceDisplay">Distance: 0.00</div>
+</div>
+
+<div id="calibration">
+    <h3>Calibration Offsets</h3>
+    <label for="calibrationX">X Offset:</label>
+    <input type="number" id="calibrationX" value="0" step="1" />
+    <label for="calibrationY">Y Offset:</label>
+    <input type="number" id="calibrationY" value="0" step="1" />
+    <button id="applyCalibration">Apply Calibration</button>
+</div>
+
+<div id="fontOptions">
+    <h3>Font Options</h3>
+    <label for="fontSelector">Select Font:</label>
+    <select id="fontSelector">
+        <option value="Arial">Arial</option>
+        <option value="Courier New">Courier New</option>
+        <option value="Georgia">Georgia</option>
+        <option value="Times New Roman">Times New Roman</option>
+    </select>
+    <label for="fontSize">Font Size:</label>
+    <input type="number" id="fontSize" value="8" min="8" max="72" />
+</div>
+
+<textarea id="output" rows="10" readonly></textarea>
+
+<div id="parallaxResult"></div>
+
+<script>
+    let currentFrame = 0;
+    const video = document.getElementById('video');
+    const img1 = document.getElementById('img1');
+    const img2 = document.getElementById('img2');
+    const parallaxResult = document.getElementById('parallaxResult');
+    const output = document.getElementById('output');
+    const coords1 = document.getElementById('coords1');
+    const coords2 = document.getElementById('coords2');
+    const distanceDisplay = document.getElementById('distanceDisplay');
+
+    let coordinates = { frame1: [], frame2: [] };
+    let calibrationOffset = { x: -5.0, y: -8.0 };
+    let pointColor = 'red'; // Default point color
+
+    // Load from local storage
+    window.onload = function() {
+        const storedData = JSON.parse(localStorage.getItem('parallaxData'));
+        if (storedData) {
+            coordinates = storedData.coordinates || { frame1: [], frame2: [] };
+            output.value = storedData.output || '';
+            currentFrame = storedData.currentFrame || 0;
+            img1.src = storedData.img1 || '';
+            img2.src = storedData.img2 || '';
+            calibrationOffset = storedData.calibrationOffset || { x: 0, y: 0 };
+            document.getElementById('calibrationX').value = calibrationOffset.x;
+            document.getElementById('calibrationY').value = calibrationOffset.y;
+        }
+        updateOutput();
+    };
+
+    // Save to local storage
+    function saveToLocalStorage() {
+        const data = {
+            coordinates,
+            output: output.value,
+            currentFrame,
+            img1: img1.src,
+            img2: img2.src,
+            calibrationOffset
+        };
+        localStorage.setItem('parallaxData', JSON.stringify(data));
+    }
+
+    document.getElementById('captureFrame').onclick = function() {
+        const selectedCanvas = document.getElementById('canvasSelector').value;
+        captureImage(selectedCanvas, selectedCanvas === 'frame1' ? img1 : img2);
+        currentFrame++;
+        saveToLocalStorage();
+    };
+
+    function captureImage(frameId, imgElement) {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        imgElement.src = canvas.toDataURL();
+    }
+
+    function captureCoordinates(event, frame) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left + calibrationOffset.x;
+        const y = event.clientY - rect.top + calibrationOffset.y;
+
+        coordinates[frame].push({ x, y });
+
+        const coordDisplay = document.createElement('div');
+        coordDisplay.className = 'coordinates';
+        coordDisplay.style.left = `${x}px`;
+        coordDisplay.style.top = `${y}px`;
+        coordDisplay.innerText = `+(${x.toFixed(3)}, ${y.toFixed(3)})`;
+        coordDisplay.style.color = pointColor; // Set color of coordinates
+        coordDisplay.style.fontSize = `8px`; // Set color of coordinates
+        event.currentTarget.appendChild(coordDisplay);
+	console.log(calibrationOffset.x + " " + calibrationOffset.y);
+        updateOutput();
+        calculateParallax();
+        calculateDistance();
+        saveToLocalStorage();
+    }
+
+    function calculateParallax() {
+        if (coordinates.frame1.length && coordinates.frame2.length) {
+            const p1 = coordinates.frame1[coordinates.frame1.length - 1];
+            const p2 = coordinates.frame2[coordinates.frame2.length - 1];
+            const px = Math.abs(p1.x - p2.x);
+            const py = Math.abs(p1.y - p2.y);
+            const depth = (px / 100); 
+            parallaxResult.innerHTML = `Parallax: Px = ${px}, Py = ${py}, Estimated Depth = ${depth.toFixed(2)}`;
+        }
+    }
+
+    function calculateDistance() {
+        if (coordinates.frame1.length >= 2 && coordinates.frame2.length >= 2) {
+            const p1 = coordinates.frame1[coordinates.frame1.length - 1];
+            const p2 = coordinates.frame1[coordinates.frame1.length - 2];
+            const p3 = coordinates.frame2[coordinates.frame2.length - 1];
+            const p4 = coordinates.frame2[coordinates.frame2.length - 2];
+
+            const distance1 = Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)).toFixed(2);
+            const distance2 = Math.sqrt(Math.pow(p3.x - p4.x, 2) + Math.pow(p3.y - p4.y, 2)).toFixed(2);
+
+            distanceDisplay.innerText = `Distance: Left = ${distance1}, Right = ${distance2}`;
+        }
+    }
+
+    function updateOutput() {
+        let outputText = '';
+        const minLength = Math.min(coordinates.frame1.length, coordinates.frame2.length);
+        for (let i = 0; i < minLength; i++) {
+            const leftCoord = coordinates.frame1[i];
+            const rightCoord = coordinates.frame2[i];
+            const parallaxX = (rightCoord.x - leftCoord.x).toFixed(2);
+            const parallaxY = (rightCoord.y - leftCoord.y).toFixed(2);
+            outputText += `(${leftCoord.x.toFixed(3)}, ${leftCoord.y.toFixed(3)}) - (${rightCoord.x.toFixed(3)}, ${rightCoord.y.toFixed(3)}) | Parallax: Px: ${parallaxX}, Py: ${parallaxY}\n`;
+        }
+        output.value = outputText;
+    }
+
+    document.getElementById('clearAllPoints').onclick = function() {
+        coordinates = { frame1: [], frame2: [] };
+        output.value = '';
+        img1.src = '';
+        img2.src = '';
+        parallaxResult.innerHTML = '';
+        distanceDisplay.innerText = 'Distance: 0.00';
+        saveToLocalStorage();
+        clearCanvas('frame1');
+        clearCanvas('frame2');
+    };
+
+    document.getElementById('removeLastPoint').onclick = function() {
+        if (coordinates.frame1.length > 0) {
+            coordinates.frame1.pop();
+        }
+        if (coordinates.frame2.length > 0) {
+            coordinates.frame2.pop();
+        }
+        updateOutput();
+        calculateParallax();
+        calculateDistance();
+        saveToLocalStorage();
+    };
+
+    document.getElementById('clearLeftCanvas').onclick = function() {
+        clearCanvas('frame1');
+        img1.src = '';
+        coordinates.frame1 = [];
+        saveToLocalStorage();
+    };
+
+    document.getElementById('clearRightCanvas').onclick = function() {
+        clearCanvas('frame2');
+        img2.src = '';
+        coordinates.frame2 = [];
+        saveToLocalStorage();
+    };
+
+    function clearCanvas(frameId) {
+        const frame = document.getElementById(frameId);
+        while (frame.firstChild) {
+            frame.removeChild(frame.firstChild);
+        }
+    }
+
+    document.getElementById('saveCoordinates').onclick = function() {
+        const blob = new Blob([output.value], { type: 'text/plain' });
+        const link = document.createElement('a');
+        link.href = window.URL.createObjectURL(blob);
+        link.download = 'coordinates.txt';
+        link.click();
+    };
+
+    img1.addEventListener('mousemove', (event) => {
+        const rect = img1.getBoundingClientRect();
+        const x = event.clientX - rect.left + calibrationOffset.x;
+        const y = event.clientY - rect.top + calibrationOffset.y;
+        coords1.innerText = `Mouse Coords: (${x.toFixed(3)}, ${y.toFixed(3)})`;
+    });
+
+    img2.addEventListener('mousemove', (event) => {
+        const rect = img2.getBoundingClientRect();
+        const x = event.clientX - rect.left + calibrationOffset.x;
+        const y = event.clientY - rect.top + calibrationOffset.y;
+        coords2.innerText = `Mouse Coords: (${x.toFixed(3)}, ${y.toFixed(3)})`;
+    });
+
+    document.getElementById('applyCalibration').onclick = function() {
+        const xOffset = parseFloat(document.getElementById('calibrationX').value);
+        const yOffset = parseFloat(document.getElementById('calibrationY').value);
+        calibrationOffset = { x: xOffset, y: yOffset };
+        saveToLocalStorage();
+    };
+
+    document.getElementById('fontSelector').addEventListener('change', function() {
+        const selectedFont = this.value;
+        const fontSize = document.getElementById('fontSize').value;
+        document.querySelectorAll('.coordinates').forEach(coord => {
+            coord.style.fontFamily = selectedFont;
+            coord.style.fontSize = `${fontSize}px`;
+        });
+    });
+
+    document.getElementById('fontSize').addEventListener('input', function() {
+        const selectedFont = document.getElementById('fontSelector').value;
+        const fontSize = this.value;
+        document.querySelectorAll('.coordinates').forEach(coord => {
+            coord.style.fontFamily = selectedFont;
+            coord.style.fontSize = `${fontSize}px`;
+        });
+    });
+
+    // Color selection for points
+    document.getElementById('colorSelector').addEventListener('input', function() {
+        pointColor = this.value;
+    });
+
+    // Add color selector to HTML
+    const colorSelector = document.createElement('input');
+    colorSelector.type = 'color';
+    colorSelector.id = 'colorSelector';
+    colorSelector.value = pointColor;
+    document.getElementById('fontOptions').appendChild(colorSelector);
+</script>
+</body>
+</html>
